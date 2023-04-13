@@ -1,0 +1,60 @@
+steps:
+- name: 'gcr.io/cloud-builders/git'
+  id: 'Get Credentials'
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    git config --global credential.helper store &&
+    git remote set-url origin https://$_TOKEN:x-oauth-basic@github.com/amitbisht09/$REPO_NAME.git &&
+    git fetch --unshallow
+
+- name: 'gcr.io/cloud-builders/mvn'
+  id: 'Build Scala'
+  args: ['clean', 'package']
+
+- name: 'gcr.io/cloud-builders/gsutil'
+  id: 'Copy JAR to GCS'
+  args: ['cp', 'target/scala-maven-example-1.0.0-SNAPSHOT.jar', 'gs://$_GCS_BUCKET_NAME/']
+
+- name: 'gcr.io/cloud-builders/gcloud'
+  id: 'Deploy to Composer'
+  entrypoint: 'bash'
+  args: 
+  - '-c'
+  - |
+    for file in $(git diff --name-only HEAD~1 dags/*.py); do
+    ## for file in $(find ./dags -type f -name "*.py"); do
+      # Get the DAG name from the modified DAG files
+      dag_name=$(basename "$file" .py)
+
+      # Copy the DAG file to the GCS bucket
+      gsutil cp "$file" gs://$_GCS_BUCKET_NAME/dags/$dag_name.py
+
+      # Import the DAG file to the Composer environment
+      gcloud composer environments storage dags import \
+       --environment $_COMPOSER_ENVIRONMENT \
+       --location $_COMPOSER_LOCATION \
+       --source gs://$_GCS_BUCKET_NAME/dags/$dag_name.py \
+       --project $PROJECT_ID \
+       --quiet
+
+      # Trigger the DAG
+      gcloud composer environments run \
+       $_COMPOSER_ENVIRONMENT \
+       --location $_COMPOSER_LOCATION \
+       dags trigger -- $dag_name
+
+    done
+
+  env:
+  - 'PROJECT_ID=tensile-rite-366604'
+
+substitutions:
+  _GCS_BUCKET_NAME: europe-west2-nwp-dev-ccs-co-1396b76c-bucket
+  _COMPOSER_ENVIRONMENT: nwp-dev-ccs-composer-env
+  _COMPOSER_LOCATION: europe-west2
+  _TOKEN: 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
+
+options:
+  logging: CLOUD_LOGGING_ONLY
